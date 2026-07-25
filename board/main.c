@@ -28,6 +28,10 @@
 
 #include "board/can_comms.h"
 #include "board/main_comms.h"
+#ifdef PANDA_NUCLEO
+#include "board/drivers/serial_uart_raw.h"
+#include "board/drivers/serial_comms.h"
+#endif
 
 
 // ********************* Serial debugging *********************
@@ -326,7 +330,12 @@ int main(void) {
   print("DEBUG ENABLED\n");
 #endif
   // enable USB (right before interrupts or enum can fail!)
+#ifdef PANDA_NUCLEO
+  // Nucleo: no usable USB peripheral - panda protocol runs over USART2 (ST-Link VCP)
+  serial_comms_init();
+#else
   usb_init();
+#endif
 
   if (current_board->has_spi) {
     gpio_spi_init();
@@ -342,6 +351,20 @@ int main(void) {
 
   // LED should keep on blinking all the time
   while (true) {
+#ifdef PANDA_NUCLEO
+    // Polled UART transport: service comms as fast as possible. The stock LED
+    // fade below blocks for seconds, which would starve the serial link
+    // (USB pandas do comms in interrupts, so the fade is harmless there).
+    serial_comms_tick();
+    if (power_save_status == POWER_SAVE_STATUS_DISABLED) {
+      static uint32_t nucleo_blink = 0U;
+      nucleo_blink++;
+      if ((nucleo_blink & 0x3FFFFU) == 0U) {
+        led_set(LED_RED, (nucleo_blink & 0x40000U) != 0U);
+      }
+    }
+    continue;
+#endif
     if (power_save_status == POWER_SAVE_STATUS_DISABLED) {
       #ifdef DEBUG_FAULTS
       if (fault_status == FAULT_STATUS_NONE) {

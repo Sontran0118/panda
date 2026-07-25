@@ -70,6 +70,12 @@ uint32_t can_slots_empty(const can_ring *q);
 #define BUS_CONFIG_ARRAY_SIZE 4
 extern bus_config_t bus_config[BUS_CONFIG_ARRAY_SIZE];
 
+#ifdef STM32F446xx
+// number of REAL CAN peripherals on the F446 (CAN1, CAN2). PANDA_CAN_CNT stays 3
+// so the bus/queue arrays keep their shape; this bounds actual peripheral init.
+#define F446_CAN_CNT 2U
+#endif
+
 #define CANIF_FROM_CAN_NUM(num) (cans[num])
 #define BUS_NUM_FROM_CAN_NUM(num) (bus_config[num].bus_lookup)
 #define CAN_NUM_FROM_BUS_NUM(num) (bus_config[num].can_num_lookup)

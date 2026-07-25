@@ -90,7 +90,7 @@ def build_project(project_name, project, main, extra_flags):
     CFLAGS=flags,
     ASFLAGS=flags,
     LINKFLAGS=flags,
-    CPPPATH=[Dir("./"), "./board/stm32f4/inc", "./board/stm32h7/inc", opendbc.INCLUDE_PATH],
+    CPPPATH=[Dir("./"), "./board/stm32f4/inc", "./board/stm32h7/inc", "/home/tran/opendbc_src"],
     ASCOM="$AS $ASFLAGS -o $TARGET -c $SOURCES",
     BUILDERS={
       'Objcopy': Builder(generator=objcopy, suffix='.bin', src_suffix='.elf')
@@ -166,6 +166,25 @@ with open("board/obj/cert.h", "w") as f:
 # panda fw
 build_project("panda", base_project_f4, "./board/main.c", [])
 build_project("panda_h7", base_project_h7, "./board/main.c", [])
+
+
+base_project_f446 = {
+  "STARTUP_FILE": "./board/stm32f446/startup_stm32f446xx.s",
+  "LINKER_SCRIPT": "./board/stm32f446/stm32f446_flash.ld",
+  "APP_START_ADDRESS": "0x8004000",
+  "FLAGS": [
+    "-mcpu=cortex-m4",
+    "-mhard-float",
+    "-DSTM32F4",
+    "-DSTM32F446xx",
+    "-DPANDA_NUCLEO",
+    "-DMAZDA_FILTER",
+    "-Iboard/stm32f446/inc",
+    "-mfpu=fpv4-sp-d16",
+  ],
+}
+
+build_project("panda_f446", base_project_f446, "./board/main.c", [])
 
 # panda jungle fw
 flags = [

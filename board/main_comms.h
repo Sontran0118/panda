@@ -201,6 +201,35 @@ int comms_control_handler(ControlPacket_t *req, uint8_t *resp) {
         (void)memcpy(resp, &code[code_len + 64], resp_len);
       }
       break;
+#ifdef PANDA_NUCLEO
+    // **** 0xd5: get decoded Mazda vehicle state
+    case 0xd5:
+      (void)memcpy(resp, (uint8_t *)&vehicle_state, sizeof(vehicle_state));
+      resp_len = sizeof(vehicle_state);
+      break;
+    // **** 0xd7: dump live CAN + GPIO registers for param1=can_number (debug)
+    case 0xd7:
+      if (req->param1 < 3U) {
+        CAN_TypeDef *CANx = CANIF_FROM_CAN_NUM((uint8_t)req->param1);
+        uint32_t regs[12];
+        regs[0] = CANx->BTR;
+        regs[1] = CANx->MSR;
+        regs[2] = CANx->ESR;
+        regs[3] = CANx->MCR;
+        regs[4] = CAN1->FMR;
+        regs[5] = CAN1->FA1R;
+        regs[6] = CANx->RF0R;          // RX FIFO0: FMP0 (pending count), FOVR0, FULL0
+        // RAW PIN STATE: GPIOB IDR (input data reg) — bit5=PB5(CAN2 RX), bit8=PB8(CAN1 RX)
+        regs[7] = GPIOB->IDR;
+        regs[8] = GPIOB->MODER;        // is PB5 in ALTERNATE mode (0b10)?
+        regs[9] = GPIOB->AFR[0];       // AF for PB0-7: PB5 nibble at bits 20-23 (should be 9)
+        regs[10] = GPIOB->AFR[1];      // AF for PB8-15: PB8 nibble
+        regs[11] = CANx->sFIFOMailBox[0].RIR;  // top RX mailbox ID reg (if a frame sits there)
+        (void)memcpy(resp, (uint8_t *)regs, sizeof(regs));
+        resp_len = sizeof(regs);
+      }
+      break;
+#endif
     // **** 0xd6: get version
     case 0xd6:
       COMPILE_TIME_ASSERT(sizeof(gitversion) <= USBPACKET_MAX_SIZE);

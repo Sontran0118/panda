@@ -99,7 +99,12 @@ void harness_init(void) {
   set_gpio_output(current_board->harness_config->GPIO_relay_SBU2, current_board->harness_config->pin_relay_SBU2, 1);
 
   // detect initial orientation
+#ifdef PANDA_NUCLEO
+  // Nucleo has no harness/SBU ADC hardware - ADC would spin forever
+  harness.status = HARNESS_STATUS_NC;
+#else
   harness.status = harness_detect_orientation();
+#endif
 
   // keep buses connected by default
   set_intercept_relay(false, false);

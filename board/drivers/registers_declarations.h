@@ -8,7 +8,11 @@ typedef struct reg {
 } reg;
 
 // 10 bit hash with 23 as a prime
+#ifdef STM32F446xx
+#define REGISTER_MAP_SIZE 0xFFU   // 128K RAM (mask: must be 2^n-1)
+#else
 #define REGISTER_MAP_SIZE 0x3FFU
+#endif
 #define HASHING_PRIME 23U
 #define CHECK_COLLISION(hash, addr) (((uint32_t) register_map[hash].address != 0U) && (register_map[hash].address != (addr)))
 

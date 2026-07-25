@@ -1,5 +1,21 @@
 #include "bxcan_declarations.h"
 
+#ifdef PANDA_NUCLEO
+// on-device Mazda decoding, called from can_rx() below
+#include "board/vehicle_state.h"
+#endif
+
+#ifdef STM32F446xx
+// F446 has only CAN1/CAN2. CAN_ARRAY_SIZE stays 3 so the tables below keep their
+// shape, and the unused third slot is aliased to CAN2 purely so this file compiles.
+// Nothing indexes can_number 2: can_init_all() stops at F446_CAN_CNT, and the
+// bus_config mapping routes logical bus 2 to can_number 1 (the real CAN2).
+#define CAN3 CAN2
+#define CAN3_TX_IRQn CAN2_TX_IRQn
+#define CAN3_RX0_IRQn CAN2_RX0_IRQn
+#define CAN3_SCE_IRQn CAN2_SCE_IRQn
+#endif
+
 // IRQs: CAN1_TX, CAN1_RX0, CAN1_SCE
 //       CAN2_TX, CAN2_RX0, CAN2_SCE
 //       CAN3_TX, CAN3_RX0, CAN3_SCE
@@ -66,6 +82,9 @@ void update_can_health_pkt(uint8_t can_number, uint32_t ir_reg) {
 // ***************************** CAN *****************************
 // CANx_SCE IRQ Handler
 static void can_sce(uint8_t can_number) {
+  CAN_TypeDef *CANx = CANIF_FROM_CAN_NUM(can_number);
+  // clear latched FIFO overrun so reception can resume
+  CANx->RF0R |= (CAN_RF0R_FOVR0 | CAN_RF0R_FULL0);
   update_can_health_pkt(can_number, 1U);
 }
 
@@ -136,6 +155,12 @@ void can_rx(uint8_t can_number) {
   CAN_TypeDef *CANx = CANIF_FROM_CAN_NUM(can_number);
   uint8_t bus_number = BUS_NUM_FROM_CAN_NUM(can_number);
 
+  // FOVR0 recovery: clear FIFO overrun/full flags (write-1-to-clear).
+  // Once FOVR0 latches, bxCAN stops accepting new frames until it is cleared.
+  if ((CANx->RF0R & (CAN_RF0R_FOVR0 | CAN_RF0R_FULL0)) != 0U) {
+    CANx->RF0R |= (CAN_RF0R_FOVR0 | CAN_RF0R_FULL0);
+  }
+
   while ((CANx->RF0R & CAN_RF0R_FMP0) != 0U) {
     can_health[can_number].total_rx_cnt += 1U;
 
@@ -175,6 +200,9 @@ void can_rx(uint8_t can_number) {
       can_health[can_number].total_fwd_cnt += 1U;
     }
 
+#ifdef PANDA_NUCLEO
+    vehicle_state_update(to_push.addr, &to_push.data[0]);
+#endif
     safety_rx_invalid += safety_rx_hook(&to_push) ? 0U : 1U;
     ignition_can_hook(&to_push);
 
@@ -194,9 +222,13 @@ static void CAN2_TX_IRQ_Handler(void) { process_can(1); }
 static void CAN2_RX0_IRQ_Handler(void) { can_rx(1); }
 static void CAN2_SCE_IRQ_Handler(void) { can_sce(1); }
 
+#ifndef STM32F446xx
 static void CAN3_TX_IRQ_Handler(void) { process_can(2); }
 static void CAN3_RX0_IRQ_Handler(void) { can_rx(2); }
 static void CAN3_SCE_IRQ_Handler(void) { can_sce(2); }
+#endif
+// (F446: CAN3 aliases CAN2, so these handlers would collide with CAN2's on the
+//  same IRQ vector and mislabel CAN2 frames as bus 2 — omitted on F446.)
 
 bool can_init(uint8_t can_number) {
   bool ret = false;
@@ -207,9 +239,17 @@ bool can_init(uint8_t can_number) {
   REGISTER_INTERRUPT(CAN2_TX_IRQn, CAN2_TX_IRQ_Handler, CAN_INTERRUPT_RATE, FAULT_INTERRUPT_RATE_CAN_2)
   REGISTER_INTERRUPT(CAN2_RX0_IRQn, CAN2_RX0_IRQ_Handler, CAN_INTERRUPT_RATE, FAULT_INTERRUPT_RATE_CAN_2)
   REGISTER_INTERRUPT(CAN2_SCE_IRQn, CAN2_SCE_IRQ_Handler, CAN_INTERRUPT_RATE, FAULT_INTERRUPT_RATE_CAN_2)
+#ifndef STM32F446xx
   REGISTER_INTERRUPT(CAN3_TX_IRQn, CAN3_TX_IRQ_Handler, CAN_INTERRUPT_RATE, FAULT_INTERRUPT_RATE_CAN_3)
   REGISTER_INTERRUPT(CAN3_RX0_IRQn, CAN3_RX0_IRQ_Handler, CAN_INTERRUPT_RATE, FAULT_INTERRUPT_RATE_CAN_3)
   REGISTER_INTERRUPT(CAN3_SCE_IRQn, CAN3_SCE_IRQ_Handler, CAN_INTERRUPT_RATE, FAULT_INTERRUPT_RATE_CAN_3)
+#else
+  // F446 THE BUG: CAN3_*_IRQn are #define'd to CAN2_*_IRQn (CAN3 aliases CAN2).
+  // Registering the CAN3 handlers here OVERWRITES the CAN2 handlers for the SAME
+  // IRQ vector -> a CAN2 RX interrupt runs can_rx(2) instead of can_rx(1), so
+  // CAN2's frames get tagged bus 2 and never appear on bus 1. Skip them: CAN2's
+  // own handlers (registered just above) must win.
+#endif
 
   if (can_number != 0xffU) {
     CAN_TypeDef *CANx = CANIF_FROM_CAN_NUM(can_number);

@@ -22,8 +22,16 @@ bool can_loopback = false;
   extern can_ring can_##x; \
   can_ring can_##x = { .w_ptr = 0, .r_ptr = 0, .fifo_size = (size), .elems = (CANPacket_t *)&(elems_##x) };
 
+#ifdef STM32F446xx
+#define CAN_RX_BUFFER_SIZE 2048U   // deep queue, keeps ~20KB stack headroom
+#else
 #define CAN_RX_BUFFER_SIZE 4096U
+#endif
+#ifdef STM32F446xx
+#define CAN_TX_BUFFER_SIZE 128U
+#else
 #define CAN_TX_BUFFER_SIZE 416U
+#endif
 
 #ifdef STM32H7
 // ITCM RAM and DTCM RAM are the fastest for Cortex-M7 core access
@@ -130,12 +138,32 @@ void can_clear(can_ring *q) {
 
 // Helpers
 // Panda:       Bus 0=CAN1   Bus 1=CAN2   Bus 2=CAN3
+#ifdef STM32F446xx
+// F446 has only two CAN peripherals, but openpilot's forwarding convention is
+// bus 0 <-> bus 2 (get_fwd_bus() in the opendbc safety layer): bus 0 = main/
+// powertrain, bus 2 = camera/ADAS. Bus 1 never forwards. So physical CAN2 must
+// present as LOGICAL BUS 2, not bus 1, or no frame is ever eligible to forward.
+//
+// bus_config is indexed two different ways, which is easy to get wrong:
+//   .bus_lookup     is read as bus_config[can_number].bus_lookup     (can -> bus)
+//   .can_num_lookup is read as bus_config[bus_number].can_num_lookup (bus -> can)
+// So index 1 serves BOTH roles: as can_number 1 it maps to bus 2, and as
+// bus_number 1 it maps to no CAN (0xFF) because nothing lives on bus 1 here.
+// Index 2 is bus 2 -> can 1; its .bus_lookup is unused (there is no can_number 2).
+bus_config_t bus_config[BUS_CONFIG_ARRAY_SIZE] = {
+  { .bus_lookup = 0U, .can_num_lookup = 0U, .forwarding_bus = -1, .can_speed = 5000U, .can_data_speed = 20000U, .canfd_auto = false, .canfd_enabled = false, .brs_enabled = false, .canfd_non_iso = false },
+  { .bus_lookup = 2U, .can_num_lookup = 0xFFU, .forwarding_bus = -1, .can_speed = 5000U, .can_data_speed = 20000U, .canfd_auto = false, .canfd_enabled = false, .brs_enabled = false, .canfd_non_iso = false },
+  { .bus_lookup = 0xFFU, .can_num_lookup = 1U, .forwarding_bus = -1, .can_speed = 5000U, .can_data_speed = 20000U, .canfd_auto = false, .canfd_enabled = false, .brs_enabled = false, .canfd_non_iso = false },
+  { .bus_lookup = 0xFFU, .can_num_lookup = 0xFFU, .forwarding_bus = -1, .can_speed = 333U, .can_data_speed = 333U, .canfd_auto = false, .canfd_enabled = false, .brs_enabled = false, .canfd_non_iso = false },
+};
+#else
 bus_config_t bus_config[BUS_CONFIG_ARRAY_SIZE] = {
   { .bus_lookup = 0U, .can_num_lookup = 0U, .forwarding_bus = -1, .can_speed = 5000U, .can_data_speed = 20000U, .canfd_auto = false, .canfd_enabled = false, .brs_enabled = false, .canfd_non_iso = false },
   { .bus_lookup = 1U, .can_num_lookup = 1U, .forwarding_bus = -1, .can_speed = 5000U, .can_data_speed = 20000U, .canfd_auto = false, .canfd_enabled = false, .brs_enabled = false, .canfd_non_iso = false },
   { .bus_lookup = 2U, .can_num_lookup = 2U, .forwarding_bus = -1, .can_speed = 5000U, .can_data_speed = 20000U, .canfd_auto = false, .canfd_enabled = false, .brs_enabled = false, .canfd_non_iso = false },
   { .bus_lookup = 0xFFU, .can_num_lookup = 0xFFU, .forwarding_bus = -1, .can_speed = 333U, .can_data_speed = 333U, .canfd_auto = false, .canfd_enabled = false, .brs_enabled = false, .canfd_non_iso = false },
 };
+#endif
 
 void can_init_all(void) {
   for (uint8_t i=0U; i < PANDA_CAN_CNT; i++) {
@@ -143,15 +171,29 @@ void can_init_all(void) {
       bus_config[i].can_data_speed = 0U;
     #endif
     can_clear(can_queues[i]);
+#ifdef STM32F446xx
+    // F446 has only CAN1 (can 0) and CAN2 (can 1). There is no can_number 2:
+    // cans[2] aliases CAN2, so can_init(2) would RE-initialize the already-running
+    // CAN2 -- re-entering INRQ mid-operation and re-clocking the peripheral, leaving
+    // it mis-synced so it STUFF/FORM-errors on real traffic. Skip the phantom init.
+    if (i >= F446_CAN_CNT) { continue; }
+#endif
     (void)can_init(i);
   }
 }
 
 void can_set_orientation(bool flipped) {
+#ifdef STM32F446xx
+  // The Nucleo has no harness relay / SBU orientation detection, and the stock
+  // swap below assumes can_number 2 exists (it does not here) -- applying it
+  // would overwrite the F446 can<->bus mapping set up above. Fixed orientation.
+  UNUSED(flipped);
+#else
   bus_config[0].bus_lookup = flipped ? 2U : 0U;
   bus_config[0].can_num_lookup = flipped ? 2U : 0U;
   bus_config[2].bus_lookup = flipped ? 0U : 2U;
   bus_config[2].can_num_lookup = flipped ? 0U : 2U;
+#endif
 }
 
 #ifdef PANDA_JUNGLE
