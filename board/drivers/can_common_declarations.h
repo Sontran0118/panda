@@ -76,6 +76,12 @@ extern bus_config_t bus_config[BUS_CONFIG_ARRAY_SIZE];
 #define F446_CAN_CNT 2U
 #endif
 
+#ifdef PANDA_NUCLEO
+// engine-running threshold for CAN ignition detection on the Mazda CX-5, in rpm.
+// Idle is ~650-750; key-on-engine-off is 0. See ignition_can_hook().
+#define MAZDA_IGNITION_MIN_RPM 400U
+#endif
+
 #define CANIF_FROM_CAN_NUM(num) (cans[num])
 #define BUS_NUM_FROM_CAN_NUM(num) (bus_config[num].bus_lookup)
 #define CAN_NUM_FROM_BUS_NUM(num) (bus_config[num].can_num_lookup)

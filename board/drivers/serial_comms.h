@@ -16,6 +16,8 @@
 #define SERIAL_CHECKSUM_START 0xABU
 #define SERIAL_HEADER_SIZE 7U
 #define SERIAL_BUF_SIZE    2048U
+// response framing overhead in ser_tx: [HACK][len:2][...data...][checksum]
+#define SERIAL_RESP_OVERHEAD 4U
 
 static uint8_t ser_rx[SERIAL_BUF_SIZE];
 static uint8_t ser_tx[SERIAL_BUF_SIZE];
@@ -55,6 +57,16 @@ void serial_comms_tick(void) {
   if (mosi_len > (SERIAL_BUF_SIZE - SERIAL_HEADER_SIZE - 1U)) {
     uart_flush_rx();
     uint8_t nack = SERIAL_NACK; uart_send_raw(&nack, 1U); return;
+  }
+  // Clamp the requested response size to what ser_tx can actually hold.
+  // The response is [HACK][len:2][data][checksum], so data may use at most
+  // SERIAL_BUF_SIZE - 4. pandad asks for RECV_SIZE (0x4000 = 16384) on the CAN
+  // read endpoint, which is 8x this buffer: unclamped, comms_can_read() writes
+  // ~14KB past ser_tx and corrupts whatever follows it in RAM. Clamping just
+  // returns a shorter batch, which the host already handles -- comms_can_read()
+  // keeps the remainder queued for the next call.
+  if (miso_len > (SERIAL_BUF_SIZE - SERIAL_RESP_OVERHEAD)) {
+    miso_len = SERIAL_BUF_SIZE - SERIAL_RESP_OVERHEAD;
   }
 
   // 2) ack header, then read mosi data (if any) + its checksum byte

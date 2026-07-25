@@ -250,6 +250,24 @@ void ignition_can_hook(CANPacket_t *msg) {
       ignition_can_cnt = 0U;
     }
 
+#ifdef PANDA_NUCLEO
+    // Mazda CX-5 2023 (MAZDA_CX5_2022): this platform does not transmit 0x9E
+    // (MSG_05) at all, so the exception above never fires and ignition_can stays
+    // false forever -- which makes pandad hold NO_OUTPUT permanently, since its
+    // relay logic is `!ignition_local || !is_onroad`.
+    //
+    // Use ENGINE_DATA (0x202) instead: RPM is a big-endian 16-bit at bit 7 with a
+    // 0.25 scale, so raw = (d[0]<<8)|d[1] and rpm = raw/4. A running engine idles
+    // around 650-750 rpm; key-on-engine-off reads 0. Threshold well below idle but
+    // above noise. 0x202 is sent at ~120 Hz, comfortably faster than the 2 s
+    // ignition_can timeout in main.c.
+    if ((addr == 0x202) && (len == 8)) {
+      uint32_t rpm_raw = ((uint32_t)msg->data[0] << 8) | (uint32_t)msg->data[1];
+      ignition_can = (rpm_raw / 4U) > MAZDA_IGNITION_MIN_RPM;
+      ignition_can_cnt = 0U;
+    }
+#endif
+
   }
 }
 
