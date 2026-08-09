@@ -24,7 +24,7 @@
 // The last two are for alpha longitudinal (see opendbc_patches/*_mazda_alpha_long).
 // Both are inert until that build is enabled -- they only widen what the host is
 // allowed to SEE, never what it may send; the tx side is the safety model's job.
-#define MAZDA_HOST_IDS_LEN 19U
+#define MAZDA_HOST_IDS_LEN 26U
 
 static const uint16_t MAZDA_HOST_IDS[MAZDA_HOST_IDS_LEN] = {
   0x078U, // BRAKE
@@ -46,21 +46,31 @@ static const uint16_t MAZDA_HOST_IDS[MAZDA_HOST_IDS_LEN] = {
   0x440U, // CAM_LANEINFO
   0x477U, // BSM
   0x76CU, // radar UDS RESPONSE (0x764 + 0x8)
-  // REMOVED 2026-08-09: the seven RADAR_* IDs (0x361-0x366, 0x499) added for the
-  // alpha-long dash-fault capture. They were justified as "low rate, so the
-  // host-feed budget is unaffected", and that was measured wrong -- the budget
-  // was already at its limit, so any addition pushed it over.
+  // RADAR SHADOW, back on purpose. These seven are the radar's OTHER frames --
+  // the ones alpha long does not replace -- and their disappearance is the
+  // leading explanation for the "front camera sensor" fault. The host has to SEE
+  // them to capture them before suppression, and to replay them afterwards.
   //
-  // MEASURED over one 990 s drive with them present: rx_buffer_overflow 446,577
-  // and resync_bytes 7,217, ending with the host feed starved to 1 frame/s while
-  // CAN1's hardware total_rx_cnt kept climbing past 2.8M. carState froze (v pinned
-  // at 41.0 kph, steering angle decoding as -1369.6 deg from a torn frame) for
-  // 368 s, which read as "cruise MAIN off" / wrongCarMode and made openpilot
-  // impossible to re-engage after a brake.
+  // THEY WERE REMOVED ONCE, AND THE REASON STILL STANDS. Measured over one 990 s
+  // drive with them present: rx_buffer_overflow 446,577 and resync_bytes 7,217,
+  // with the host feed starved to 1 frame/s while CAN1's hardware counter climbed
+  // past 2.8M. carState froze -- v pinned at 41.0 kph, steering angle decoding as
+  // -1369.6 deg from a torn frame -- for 368 s, which surfaced as wrongCarMode and
+  // made openpilot impossible to re-engage after a brake.
   //
-  // Nothing consumes them: the radar-shadow replay they were captured for was
-  // never driven, and they are irrelevant to a MADS run. Put them back ONLY for
-  // an alpha-long capture session, and expect to trim elsewhere to pay for them.
+  // What changed since: can_thread no longer spins (it polls at ~500 Hz instead of
+  // ~5000), and the panda now runs in its own process, so the host drains far more
+  // reliably than it did then. That is the reason to try again -- it is NOT proof
+  // the budget fits. WATCH rx_buffer_overflow ON THE FIRST RUN. If it climbs,
+  // these come straight back out and the capture becomes a dedicated short session
+  // rather than something carried for a whole drive.
+  0x361U, // RADAR_DISTANCE   4-bit CTR in the low nibble of byte 7, no checksum
+  0x362U, // RADAR_TURN       same
+  0x363U, // RADAR_363        same
+  0x364U, // RADAR_364        same
+  0x365U, // RADAR_365        same
+  0x366U, // RADAR_366_STATIC no counter, no checksum -- pure static replay
+  0x499U, // RADAR_499_STATIC no signals defined at all, opaque 8 bytes
 };
 
 // Bus 2 (camera segment) host feed. The host decodes exactly TWO camera frames
