@@ -178,13 +178,65 @@ base_project_f446 = {
     "-DSTM32F4",
     "-DSTM32F446xx",
     "-DPANDA_NUCLEO",
+    # Transport, kept separate from PANDA_NUCLEO (which now means only "Nucleo-style
+    # board": 2 CAN, no harness/SBU hardware, on-device Mazda decoding). The F446
+    # Nucleo does not bring the MCU's own USB out to a connector -- the only socket
+    # is the ST-Link's -- so the panda protocol runs over USART2 via the ST-Link VCP.
+    "-DPANDA_SERIAL_LINK",
     "-DMAZDA_FILTER",
+    # Lateral engages on cruise MAIN instead of ACC-set. See the long note at the
+    # CRZ_CTRL branch of mazda_rx_hook in opendbc/safety/modes/mazda.h -- this
+    # widens when the panda will pass steering torque. Remove this line and
+    # reflash to go back to the stock ACC-engaged gate.
+    "-DMAZDA_MADS",
     "-Iboard/stm32f446/inc",
     "-mfpu=fpv4-sp-d16",
   ],
 }
 
 build_project("panda_f446", base_project_f446, "./board/main.c", [])
+
+# STM32F407VET6 core board -- same 2-CAN Nucleo-style panda, smaller board with
+# USB-C. Pins are identical (CAN1 PB8/PB9, CAN2 PB5/PB6), so board/boards/nucleo.h
+# is reused unchanged. What differs is the MCU: 168 MHz not 180, no PLLSAI (48 MHz
+# comes off PLLQ), and no on-board ST-Link.
+#
+# NOTE the deliberate absence of -DPANDA_SERIAL_LINK. Unlike the Nucleo, this board
+# wires the MCU's own USB (PA11/PA12) straight to its USB-C socket, so it enumerates
+# as a normal panda and needs no external USB-UART. Confirmed empirically: every DFU
+# flash of this board went over that connector.
+#
+# It still needs PANDA_NUCLEO, which now means only "Nucleo-style board" -- 2 CAN
+# buses, no harness/SBU ADC hardware, on-device Mazda vehicle-state decoding.
+#
+# Flashing is over DFU: bridge BOOT0 to 3V3, power-cycle, then
+#   dfu-util -d 0483:df11 -a 0 -s 0x08000000        -D board/obj/bootstub.panda_f407.bin
+#   dfu-util -d 0483:df11 -a 0 -s 0x08004000:leave  -D board/obj/panda_f407.bin.signed
+# (add -S <serial> when anything else DFU-capable is attached, e.g. an Arduino).
+base_project_f407 = {
+  "STARTUP_FILE": "./board/stm32f407/startup_stm32f407xx.s",  # panda's own minimal startup (no SystemInit/libc), copied from the F446 one: every IRQ this firmware uses is at an identical vector position on both parts (CAN1 19/20/22, CAN2 63/64/66, USART2 38, DMA1_S5 16, TIM6 54)
+  "LINKER_SCRIPT": "./board/stm32f407/stm32f407_flash.ld",
+  "APP_START_ADDRESS": "0x8004000",
+  "FLAGS": [
+    "-mcpu=cortex-m4",
+    "-mhard-float",
+    "-DSTM32F4",
+    "-DSTM32F407xx",
+    "-DPANDA_NUCLEO",
+    "-DMAZDA_FILTER",
+    "-DMAZDA_MADS",
+    # Lateral survives the brake. See the long note at the MAZDA_MADS_BRAKE
+    # branch in opendbc/safety/modes/mazda.h -- it is the most permissive
+    # lateral gate in that file, and it exists so the car can TURN, which needs
+    # lateral active while the driver brakes. Remove this line and reflash to go
+    # back to "brake drops it, release re-arms it".
+    "-DMAZDA_MADS_BRAKE",
+    "-Iboard/stm32f407/inc",
+    "-mfpu=fpv4-sp-d16",
+  ],
+}
+
+build_project("panda_f407", base_project_f407, "./board/main.c", [])
 
 # panda jungle fw
 flags = [
