@@ -231,6 +231,13 @@ base_project_f407 = {
     # lateral active while the driver brakes. Remove this line and reflash to go
     # back to "brake drops it, release re-arms it".
     "-DMAZDA_MADS_BRAKE",
+    # CENSUS BUILD -- enable only for diagnostics, never for driving. Opens the
+    # bus-0 host gate completely (see mazda_host_visible in mazda_filter.h).
+    # RESULT 2026-08-11: with all 99 bus-0 ids visible, suppressing the radar
+    # removed exactly NINE -- 0x21b, 0x21c and the seven already replayed by the
+    # shadow. There are no hidden radar frames. Left here because the answer is
+    # worth being able to re-derive, but it stays OFF.
+    # "-DMAZDA_HOST_CENSUS",
     "-Iboard/stm32f407/inc",
     "-mfpu=fpv4-sp-d16",
   ],

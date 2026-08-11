@@ -93,7 +93,29 @@ static bool mazda_cam_host_visible(uint32_t addr) {
   return (addr == 0x243U) || (addr == 0x440U);
 }
 
+// CENSUS BUILD -- TEMPORARY, DIAGNOSTIC, NOT FOR DRIVING.
+//
+// Built with -DMAZDA_HOST_CENSUS the gate opens completely, so the host sees every
+// frame on bus 0 instead of the 26 IDs above.
+//
+// WHY: the radar shadow can only replay frames the host has SEEN, and the host has
+// only ever seen what this list allows. If the radar sends anything outside it,
+// that frame was never captured and simply vanishes when we suppress -- which
+// would explain why the front camera fault persists even with all seven known
+// shadow frames replaying correctly and 0x21c byte-identical to the radar's
+// (MEASURED 2026-08-11, d_p.21cmatched.log). This build is how we find out: census
+// bus 0 with the radar alive, suppress, census again, and diff. Anything that
+// disappears is a radar frame we are not replaying.
+//
+// THE COST IS REAL AND IS THE REASON THE GATE EXISTS. The CX-5 main bus carries
+// ~743 distinct IDs at ~2-3k frames/s; unfiltered it overflowed can_rx_q by 1.29M
+// frames and starved the host feed to 1 frame/s, freezing carState. Keep the census
+// SHORT, watch rx_ovf and drain_gap_max_ms, and reflash the normal build after.
 static bool mazda_host_visible(uint32_t addr) {
+#ifdef MAZDA_HOST_CENSUS
+  UNUSED(addr);
+  return true;
+#else
   bool visible = false;
   for (uint8_t i = 0U; i < MAZDA_HOST_IDS_LEN; i++) {
     if ((uint32_t)MAZDA_HOST_IDS[i] == addr) {
@@ -102,4 +124,5 @@ static bool mazda_host_visible(uint32_t addr) {
     }
   }
   return visible;
+#endif
 }
