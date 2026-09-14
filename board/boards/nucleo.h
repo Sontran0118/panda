@@ -54,8 +54,18 @@ static harness_configuration nucleo_harness_config = {
 
 struct board board_nucleo = {
   .harness_config = &nucleo_harness_config,
-  .led_GPIO = {GPIOA, GPIOA, GPIOA},   // LD2 = PA5 (only one usable LED)
+  // Only one usable LED on either board, but it is not the same pin:
+  //   Nucleo-F446RE : LD2 = PA5
+  //   FK407M1 F407  : user LED = PC13 (sink mode, i.e. lit when driven low)
+  // Getting this wrong is silent -- led_set() just writes to a bare header pin --
+  // which costs you the only sign of life a board with no working link can give.
+#ifdef STM32F407xx
+  .led_GPIO = {GPIOC, GPIOC, GPIOC},
+  .led_pin = {13, 13, 13},
+#else
+  .led_GPIO = {GPIOA, GPIOA, GPIOA},
   .led_pin = {5, 5, 5},
+#endif
   .led_pwm_channels = {0, 0, 0},
   .has_spi = false,
   .fan_max_rpm = 0U,

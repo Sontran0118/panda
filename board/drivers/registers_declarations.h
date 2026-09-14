@@ -8,8 +8,8 @@ typedef struct reg {
 } reg;
 
 // 10 bit hash with 23 as a prime
-#ifdef STM32F446xx
-#define REGISTER_MAP_SIZE 0xFFU   // 128K RAM (mask: must be 2^n-1)
+#if defined(STM32F446xx) || defined(STM32F407xx)
+#define REGISTER_MAP_SIZE 0xFFU   // 128K RAM on both (mask: must be 2^n-1)
 #else
 #define REGISTER_MAP_SIZE 0x3FFU
 #endif

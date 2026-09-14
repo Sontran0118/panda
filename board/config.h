@@ -35,6 +35,12 @@
 // platform includes
 #ifdef STM32H7
   #include "board/stm32h7/stm32h7_config.h"
+#elif defined(STM32F407xx)
+  // F407VET6 core board. Its own layer rather than the generic stm32f4 one:
+  // the clock tree differs (168 MHz, PLLQ for USB, no PLLSAI) and CORE_FREQ
+  // feeds CAN bit timing, so sharing the 96 MHz generic config would put every
+  // bit time out by 1.75x.
+  #include "board/stm32f407/stm32f4_config.h"
 #elif defined(STM32F446xx)
   #include "board/stm32f446/stm32f4_config.h"
 #elif defined(STM32F4)
