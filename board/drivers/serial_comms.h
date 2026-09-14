@@ -32,10 +32,23 @@ static uint8_t serial_checksum(const uint8_t *data, uint16_t len) {
 extern void uart_send_raw(const uint8_t *d, uint16_t len);
 extern bool uart_recv_raw(uint8_t *d, uint16_t len, uint32_t timeout_ms);
 
+// serial_stats itself is defined in serial_uart_raw.h -- the byte layer needs to
+// bump rx_late, and it is included ahead of this file.
+
 // process exactly one request/response transaction. Called from the main loop.
 void serial_comms_tick(void) {
+  // 0) genuine overrun is the ONLY case where discarding buffered bytes is right.
+  //    The ring holds 27 ms at 1.5 Mbaud; if we are three quarters behind, the
+  //    DMA is about to lap us and everything buffered is already suspect.
+  if (uart_rx_avail() > ((UART_RX_BUF_SIZE * 3U) / 4U)) {
+    serial_stats.overrun += 1U;
+    uart_flush_rx();
+    return;
+  }
+
   // 1) hunt for the SYNC byte one byte at a time. Never consume a fixed block
   //    before we are aligned, or a single dropped/extra byte desyncs forever.
+  const uint16_t mark = uart_rx_mark();
   if (!uart_recv_byte(&ser_rx[0], 2U)) { return; }
   if (ser_rx[0] != SERIAL_SYNC_BYTE) { return; }   // not aligned: drop 1 byte, retry next tick
 
@@ -44,18 +57,32 @@ void serial_comms_tick(void) {
   // whole main loop when the host sends a stray SYNC byte.
 #define SERIAL_HDR_TIMEOUT_MS 3U
   if (!uart_recv_raw(&ser_rx[1], SERIAL_HEADER_SIZE - 1U, SERIAL_HDR_TIMEOUT_MS)) {
-    uart_flush_rx();
+    // 3 ms is 450 byte-times: a real header is never this late, so that SYNC was
+    // payload data. Realign past it instead of flushing what came after.
+    serial_stats.hdr_timeout += 1U;
+    uart_rx_rewind_past(mark);
     return;
   }
   if (serial_checksum(ser_rx, SERIAL_HEADER_SIZE) != 0U) {
-    uart_flush_rx();
-    uint8_t nack = SERIAL_NACK; uart_send_raw(&nack, 1U); return;
+    // Misalignment, not corruption -- the DMA stream is lossless. Step one byte
+    // and re-hunt. Deliberately SILENT: a NACK for a header the host never sent
+    // lands in its receive stream and gets read as the ack of a LATER
+    // transaction, which is how one bad byte became a self-sustaining cascade.
+    serial_stats.hdr_resync += 1U;
+    (void)memcpy(serial_stats.last_bad_hdr, ser_rx, SERIAL_HEADER_SIZE);
+    for (uint16_t i = 0U; i < SERIAL_HEADER_SIZE; i++) {
+      serial_stats.reread_hdr[i] = uart_rx_peek(mark, i);
+    }
+    uart_rx_rewind_past(mark);
+    return;
   }
   uint8_t  endpoint  = ser_rx[1];
   uint16_t mosi_len  = (uint16_t)ser_rx[2] | ((uint16_t)ser_rx[3] << 8);
   uint16_t miso_len  = (uint16_t)ser_rx[4] | ((uint16_t)ser_rx[5] << 8);
   if (mosi_len > (SERIAL_BUF_SIZE - SERIAL_HEADER_SIZE - 1U)) {
-    uart_flush_rx();
+    // aligned, so the host is genuinely mid-transaction and is waiting on a
+    // reply -- NACK it. No flush: the stream is still in step.
+    serial_stats.mosi_oversize += 1U;
     uint8_t nack = SERIAL_NACK; uart_send_raw(&nack, 1U); return;
   }
   // Clamp the requested response size to what ser_tx can actually hold.
@@ -72,9 +99,15 @@ void serial_comms_tick(void) {
   // 2) ack header, then read mosi data (if any) + its checksum byte
   uint8_t hack = SERIAL_HACK; uart_send_raw(&hack, 1U);
   if (mosi_len > 0U) {
-    if (!uart_recv_raw(&ser_rx[SERIAL_HEADER_SIZE], mosi_len + 1U, 25U)) { uart_flush_rx(); return; }
+    if (!uart_recv_raw(&ser_rx[SERIAL_HEADER_SIZE], mosi_len + 1U, 25U)) {
+      // host abandoned the transaction. Leave the ring alone; whatever arrives
+      // next gets realigned by the SYNC hunt above.
+      serial_stats.mosi_timeout += 1U;
+      return;
+    }
     if (serial_checksum(&ser_rx[SERIAL_HEADER_SIZE], mosi_len + 1U) != 0U) {
-      uart_flush_rx();
+      // we consumed exactly mosi_len+1 bytes, so the stream is still aligned.
+      serial_stats.mosi_checksum += 1U;
       uint8_t nack = SERIAL_NACK; uart_send_raw(&nack, 1U); return;
     }
   }
@@ -105,13 +138,17 @@ void serial_comms_tick(void) {
     uint16_t total = 3U + resp_len;
     ser_tx[total] = serial_checksum(ser_tx, total);
     uart_send_raw(ser_tx, total + 1U);
+    serial_stats.txn_ok += 1U;
   } else {
     uint8_t nack = SERIAL_NACK; uart_send_raw(&nack, 1U);
   }
 }
 
 void serial_comms_init(void) {
-  // bring up USART2 (PA2/PA3 -> ST-Link VCP) and clear any junk in the RX path
+  // bring up USART2 (PA2/PA3 -> ST-Link VCP), hand the receiver to DMA, then
+  // discard whatever the line held while we were coming up. RX must be DMA-fed:
+  // see the note in serial_uart_raw.h -- polled RXNE loses bytes to the CAN ISRs.
   usart2_init();
+  uart_dma_rx_init();
   uart_flush_rx();
 }

@@ -27,8 +27,14 @@
 #include "board/obj/gitversion.h"
 
 #include "board/can_comms.h"
+#ifdef PANDA_SERIAL_LINK
+// serial transport counters: main_comms.h serves them on endpoint 0xd9, so the
+// type has to be visible before it, while the definitions live in serial_uart_raw.h
+// below (which in turn needs main_comms.h's comms_* dispatch).
+#include "board/drivers/serial_comms_declarations.h"
+#endif
 #include "board/main_comms.h"
-#ifdef PANDA_NUCLEO
+#ifdef PANDA_SERIAL_LINK
 #include "board/drivers/serial_uart_raw.h"
 #include "board/drivers/serial_comms.h"
 #endif
@@ -232,6 +238,40 @@ static void tick_handler(void) {
           // clear heartbeat engaged state
           heartbeat_engaged = false;
 
+#ifdef PANDA_NUCLEO
+          // SOFTWARE RELAY: fall back to NOOUTPUT, not SILENT, and do not enter
+          // power save while the ignition is on.
+          //
+          // This build has NO harness relay, so the panda is the ONLY bus partner
+          // the forward camera has on bus 2. SILENT puts the core in
+          // ALL_CAN_SILENT (hardware bus-monitoring) where it physically cannot
+          // ACK, and power save disables the CAN interrupts outright. Either one
+          // leaves the camera unacked; it then retransmits at line rate, climbs to
+          // error-passive and stops, and the cluster reports "front camera sensor
+          // system malfunction".
+          //
+          // OBSERVED REPEATEDLY 2026-08-12: every time the host stack stopped, the
+          // heartbeat lapsed after a few seconds, this branch ran, and the camera
+          // died -- once badly enough to need an ignition cycle. It is not caused
+          // by alpha long or by radar suppression; it happens whenever the stack
+          // is not running with the car awake.
+          //
+          // NOOUTPUT is the safe idle for this board (see nooutput_init in
+          // opendbc/safety/modes/defaults.h): tx_msgs is empty so the HOST can
+          // still transmit nothing, while forwarding and ACK stay alive. This is
+          // not a weakening of the output guard -- it is the same guard with the
+          // relay closed instead of the bus muted.
+          //
+          // Power save is still entered with the ignition OFF, where there is no
+          // camera to protect and the battery matters.
+          if (current_safety_mode != SAFETY_NOOUTPUT) {
+            set_safety_mode(SAFETY_NOOUTPUT, 0U);
+          }
+
+          if (!started && (power_save_status != POWER_SAVE_STATUS_ENABLED)) {
+            set_power_save_state(POWER_SAVE_STATUS_ENABLED);
+          }
+#else
           if (current_safety_mode != SAFETY_SILENT) {
             set_safety_mode(SAFETY_SILENT, 0U);
           }
@@ -239,6 +279,7 @@ static void tick_handler(void) {
           if (power_save_status != POWER_SAVE_STATUS_ENABLED) {
             set_power_save_state(POWER_SAVE_STATUS_ENABLED);
           }
+#endif
 
           // Also disable IR when the heartbeat goes missing
           current_board->set_ir_power(0U);
@@ -313,8 +354,22 @@ int main(void) {
     fan_init();
   }
 
+#ifdef PANDA_NUCLEO
+  // BOOT INTO NOOUTPUT, not SILENT. Same reasoning as the heartbeat-loss branch
+  // above: with no harness relay the panda is the forward camera's only bus
+  // partner, and SILENT cannot ACK. A 0xd8 board reset -- which is the documented
+  // recovery for a wedged USB link -- lands here, so booting into SILENT means
+  // every wedge recovery starts killing the camera until the host re-arms.
+  // OBSERVED 2026-08-12: a 0xd8 reset followed by ~25 s before arming took the
+  // camera down hard enough to need an ignition cycle.
+  //
+  // The host can still transmit nothing in NOOUTPUT (empty tx_msgs); only
+  // forwarding and ACK are alive.
+  set_safety_mode(SAFETY_NOOUTPUT, 0U);
+#else
   // init to SILENT and can silent
   set_safety_mode(SAFETY_SILENT, 0U);
+#endif
 
   // enable CAN TXs
   enable_can_transceivers(true);
@@ -330,8 +385,10 @@ int main(void) {
   print("DEBUG ENABLED\n");
 #endif
   // enable USB (right before interrupts or enum can fail!)
-#ifdef PANDA_NUCLEO
-  // Nucleo: no usable USB peripheral - panda protocol runs over USART2 (ST-Link VCP)
+#ifdef PANDA_SERIAL_LINK
+  // No usable USB peripheral (Nucleo-F446: the F446's USB is not brought out;
+  // the only connector is the ST-Link's). Panda protocol runs over USART2
+  // instead, reached through the ST-Link VCP.
   serial_comms_init();
 #else
   usb_init();
@@ -351,7 +408,7 @@ int main(void) {
 
   // LED should keep on blinking all the time
   while (true) {
-#ifdef PANDA_NUCLEO
+#ifdef PANDA_SERIAL_LINK
     // Polled UART transport: service comms as fast as possible. The stock LED
     // fade below blocks for seconds, which would starve the serial link
     // (USB pandas do comms in interrupts, so the fade is harmless there).

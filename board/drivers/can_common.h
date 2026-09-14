@@ -22,12 +22,15 @@ bool can_loopback = false;
   extern can_ring can_##x; \
   can_ring can_##x = { .w_ptr = 0, .r_ptr = 0, .fifo_size = (size), .elems = (CANPacket_t *)&(elems_##x) };
 
-#ifdef STM32F446xx
+// F446 and F407 both have 128K SRAM, against the H7's much larger budget these
+// defaults were written for. At 4096/416 the queues alone are ~80KB and .bss
+// overflows the region by ~3.5KB; 2048/128 keeps ~20KB of stack headroom.
+#if defined(STM32F446xx) || defined(STM32F407xx)
 #define CAN_RX_BUFFER_SIZE 2048U   // deep queue, keeps ~20KB stack headroom
 #else
 #define CAN_RX_BUFFER_SIZE 4096U
 #endif
-#ifdef STM32F446xx
+#if defined(STM32F446xx) || defined(STM32F407xx)
 #define CAN_TX_BUFFER_SIZE 128U
 #else
 #define CAN_TX_BUFFER_SIZE 416U
@@ -171,8 +174,8 @@ void can_init_all(void) {
       bus_config[i].can_data_speed = 0U;
     #endif
     can_clear(can_queues[i]);
-#ifdef STM32F446xx
-    // F446 has only CAN1 (can 0) and CAN2 (can 1). There is no can_number 2:
+#if defined(STM32F446xx) || defined(STM32F407xx)
+    // F446 and F407 have only CAN1 (can 0) and CAN2 (can 1). There is no can_number 2:
     // cans[2] aliases CAN2, so can_init(2) would RE-initialize the already-running
     // CAN2 -- re-entering INRQ mid-operation and re-clocking the peripheral, leaving
     // it mis-synced so it STUFF/FORM-errors on real traffic. Skip the phantom init.

@@ -5,8 +5,14 @@
 #include "board/vehicle_state.h"
 #endif
 
-#ifdef STM32F446xx
-// F446 has only CAN1/CAN2. CAN_ARRAY_SIZE stays 3 so the tables below keep their
+#ifdef MAZDA_FILTER
+// mazda_host_visible(): trims the HOST feed only. The acceptance filters accept
+// everything so that forwarding carries the full bus in both directions.
+#include "board/drivers/mazda_filter.h"
+#endif
+
+#if defined(STM32F446xx) || defined(STM32F407xx)
+// F446 and F407 both have only CAN1/CAN2. CAN_ARRAY_SIZE stays 3 so the tables below keep their
 // shape, and the unused third slot is aliased to CAN2 purely so this file compiles.
 // Nothing indexes can_number 2: can_init_all() stops at F446_CAN_CNT, and the
 // bus_config mapping routes logical bus 2 to can_number 1 (the real CAN2).
@@ -119,7 +125,19 @@ void process_can(uint8_t can_number) {
           WORD_TO_BYTE_ARRAY(&to_push.data[4], CANx->sTxMailBox[0].TDHR);
           can_set_checksum(&to_push);
 
+#ifdef MAZDA_FILTER
+          // TX echo, host feed only. The Jetson only ever transmits on bus 0
+          // (0x243), but EVERY frame forwarded car->cam is also a bus 2
+          // transmission -- echoing ~3k frames/s of forwarded traffic back over
+          // the serial link would undo the gate in can_rx() entirely. Echo bus 0
+          // through the same list, which keeps the 0x243 send confirmation the
+          // host actually uses.
+          if ((bus_number == 0U) && mazda_host_visible(to_push.addr)) {
+            rx_buffer_overflow += can_push(&can_rx_q, &to_push) ? 0U : 1U;
+          }
+#else
           rx_buffer_overflow += can_push(&can_rx_q, &to_push) ? 0U : 1U;
+#endif
         }
 
         // clear interrupt
@@ -207,7 +225,24 @@ void can_rx(uint8_t can_number) {
     ignition_can_hook(&to_push);
 
     led_set(LED_BLUE, true);
+#ifdef MAZDA_FILTER
+    // Host feed only. Forwarding (above), the safety hooks, the ignition hook and
+    // the vehicle-state decode have all already seen this frame -- they run on the
+    // full bus, which is what makes relay-malfunction detection meaningful. What
+    // the 1.5 Mbaud serial link cannot take is the raw ~2-3k frames/s of bus 0, so
+    // gate that here. Bus 2 is the camera segment and passes through whole.
+    // Per-bus host filter. Bus 0 keeps the 19-ID Mazda whitelist; bus 2 is now
+    // trimmed to the two camera frames the host actually decodes instead of
+    // passing the camera's entire output. See mazda_filter.h for the measured
+    // overflow this fixes. Forwarding is untouched -- safety_fwd_hook already ran.
+    bool host_visible = (bus_number == 0U) ? mazda_host_visible(to_push.addr)
+                      : ((bus_number == 2U) ? mazda_cam_host_visible(to_push.addr) : true);
+    if (host_visible) {
+      rx_buffer_overflow += can_push(&can_rx_q, &to_push) ? 0U : 1U;
+    }
+#else
     rx_buffer_overflow += can_push(&can_rx_q, &to_push) ? 0U : 1U;
+#endif
 
     // next
     CANx->RF0R |= CAN_RF0R_RFOM0;
