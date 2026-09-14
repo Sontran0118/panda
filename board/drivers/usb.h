@@ -11,6 +11,13 @@ static bool outep3_processing = false;
 // Store the current interface alt setting.
 static int current_int0_alt_setting = 0;
 
+// EP1 IN guard counters. See the long note at the bulk handler. Read back with
+// control request 0xda so health_t and HEALTH_PACKET_VERSION stay untouched --
+// a struct change would have to be mirrored on the host, and this is a
+// diagnostic, not part of the contract.
+uint32_t ep1_busy_skips = 0;      // token arrived while a transfer was still open
+uint32_t ep1_nospace_skips = 0;   // token arrived with no room for a full packet
+
 // packet read and write
 
 static void *USB_ReadPacket(void *dest, uint16_t len) {
@@ -30,7 +37,29 @@ static void USB_WritePacket(const void *src, uint16_t len, uint32_t ep) {
   hexdump(src, len);
   #endif
 
-  uint32_t numpacket = ((uint32_t)len + (USBPACKET_MAX_SIZE - 1U)) / USBPACKET_MAX_SIZE;
+  // A ZERO-LENGTH transfer still needs PKTCNT = 1. The reference manual's rule
+  // for an IN endpoint is "to transmit a zero-length data packet, program
+  // PKTCNT = 1 and XFRSIZ = 0", but the division below yields 0 for len = 0, so
+  // the endpoint was enabled with no packet scheduled. The core then never
+  // completes a transfer, and the next IN token drains whatever the TX FIFO
+  // still held instead.
+  //
+  // This is the COMMON path, not an edge case: the bulk EP1 handler calls
+  // comms_can_read(response, 0x40), which returns 0 every time the CAN rx queue
+  // is empty -- most polls on an idle bus. And the host cannot recover on its
+  // own, because Panda.can_recv() does bulkRead(1, 16384) with timeout=0, i.e.
+  // wait forever; only a real packet (a ZLP counts) ends that wait.
+  //
+  // MEASURED on the F407 before this fix: every 16 KiB bulk read came back as
+  // ONE stale CAN frame (0x21d, bus 2) repeated ~1170 times, while the
+  // firmware's own per-CAN counters showed total_rx flat and CAN2 at zero
+  // frames received -- i.e. the host was being fed a frame the device had never
+  // received, forever. rx_buffer_overflow climbed by ~1M per minute.
+  //
+  // It stayed hidden because the F446 build of this port uses the serial
+  // transport and never runs this path at all, and the F407 bring-up only ever
+  // exercised control transfers (health, flashing) on endpoint 0.
+  uint32_t numpacket = MAX(1U, ((uint32_t)len + (USBPACKET_MAX_SIZE - 1U)) / USBPACKET_MAX_SIZE);
   uint32_t count32b = 0;
   count32b = ((uint32_t)len + 3U) / 4U;
 
@@ -734,8 +763,52 @@ void usb_irqhandler(void) {
           #ifdef DEBUG_USB
           print("  IN PACKET QUEUE\n");
           #endif
-          // TODO: always assuming max len, can we get the length?
-          USB_WritePacket((void *)response, comms_can_read(response, 0x40), 1);
+          // DO NOT START A TRANSFER ON TOP OF ONE ALREADY IN FLIGHT.
+          //
+          // USB_WritePacket unconditionally rewrites DIEPTSIZ and then ORs in
+          // EPENA. If the endpoint is ALREADY enabled -- a transfer programmed
+          // but not yet completed -- that rewrite replaces the descriptor the
+          // core is currently working from, while the FIFO still holds the old
+          // packet's bytes. From then on the core's idea of how much to send no
+          // longer matches what is in the FIFO, and the endpoint emits runt
+          // packets forever. Nothing self-heals: only a reset clears it.
+          //
+          // MEASURED ON THE CAR. Once wedged, every bulk IN came back as
+          // exactly 4 bytes -- one FIFO word -- while the CAN silicon kept
+          // receiving normally and can_rx_q overflowed at 932 frames/s
+          // (rx_ovf reached 1,163,362). A 0xd8 reset restored it instantly,
+          // which is what puts the fault in the endpoint state rather than in
+          // CAN, the queue, or comms_can_read.
+          //
+          // comms_can_read is NOT the source: with 15-byte packets into a
+          // 64-byte buffer its overflow pointer cycles
+          // 0,11,7,3,14,10,6,2,13,9,5,1,12,8,4 and every one of those states
+          // returns a full 64 while the queue is non-empty. It cannot return 4.
+          //
+          // WHY A RACE AND NOT A CAPACITY LIMIT: the same build failed after
+          // 11 minutes on one drive and 61 minutes on the next. A queue that is
+          // merely too small fails at a repeatable load; a race fails whenever
+          // the timing lines up.
+          //
+          // The EP0 path immediately below has always had the equivalent guard
+          // (it checks DTXFSTS for room before writing). EP1 never did. That
+          // asymmetry is the bug.
+          //
+          // Skipping is SAFE and self-correcting: with the FIFO non-empty the
+          // core answers the token from what is already there, and if it is
+          // empty the core NAKs and the host simply retries. No data is lost --
+          // the CAN frames stay in can_rx_q until a transfer can carry them.
+          if ((USBx_INEP(1U)->DIEPCTL & USB_OTG_DIEPCTL_EPENA) != 0U) {
+            ep1_busy_skips += 1U;
+          } else if ((USBx_INEP(1U)->DTXFSTS & USB_OTG_DTXFSTS_INEPTFSAV)
+                     < (USBPACKET_MAX_SIZE / 4U)) {
+            // Fewer than one packet's worth of words free. Writing anyway would
+            // silently drop the tail inside the core and tear the packet.
+            ep1_nospace_skips += 1U;
+          } else {
+            // TODO: always assuming max len, can we get the length?
+            USB_WritePacket((void *)response, comms_can_read(response, 0x40), 1);
+          }
         }
         break;
 

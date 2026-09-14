@@ -207,6 +207,35 @@ int comms_control_handler(ControlPacket_t *req, uint8_t *resp) {
       (void)memcpy(resp, (uint8_t *)&vehicle_state, sizeof(vehicle_state));
       resp_len = sizeof(vehicle_state);
       break;
+#ifdef PANDA_SERIAL_LINK
+    // **** 0xd9: serial transport framing counters (see serial_stats_t).
+    // Only exists on serial-transport builds; a USB panda has no such counters
+    // and serial_stats_t is not even declared there.
+    case 0xd9:
+      COMPILE_TIME_ASSERT(sizeof(serial_stats_t) <= USBPACKET_MAX_SIZE);
+      (void)memcpy(resp, (uint8_t *)&serial_stats, sizeof(serial_stats));
+      resp_len = sizeof(serial_stats);
+      break;
+#endif
+    // **** 0xda: EP1 IN guard counters (debug). Two uint32 LE:
+    //      [0] ep1_busy_skips    -- IN token while a transfer was still open
+    //      [1] ep1_nospace_skips -- IN token with no room for a whole packet
+    //
+    // Deliberately NOT in health_t: adding a field there means bumping
+    // HEALTH_PACKET_VERSION and updating every host that unpacks the struct.
+    // A separate request keeps the diagnostic out of the contract, so the
+    // guard can be measured and later removed without a flag day.
+    //
+    // Non-zero busy_skips is DIRECT evidence of the race described at the EP1
+    // bulk handler in usb.h -- the condition that used to corrupt the endpoint
+    // now being caught instead.
+    case 0xda: {
+      uint32_t _ep1[2] = {ep1_busy_skips, ep1_nospace_skips};
+      COMPILE_TIME_ASSERT(sizeof(_ep1) <= USBPACKET_MAX_SIZE);
+      (void)memcpy(resp, (uint8_t *)_ep1, sizeof(_ep1));
+      resp_len = sizeof(_ep1);
+      break;
+    }
     // **** 0xd7: dump live CAN + GPIO registers for param1=can_number (debug)
     case 0xd7:
       if (req->param1 < 3U) {
