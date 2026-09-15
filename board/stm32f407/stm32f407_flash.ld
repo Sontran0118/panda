@@ -3,8 +3,10 @@
 **
 **  File        : stm32f4_flash.ld
 **
-**  Abstract    : Linker script for STM32F407VG Device with
-**                1024KByte FLASH, 192KByte RAM
+**  Abstract    : Linker script for the STM32F407VET6 on the FK407M1 board:
+**                512KB flash; 192KB RAM total, of which the 128KB SRAM1+SRAM2
+**                block at 0x20000000 is used (see the MEMORY note below).
+**                (Header originally from ST's STM32F407VG template, a 1MB part.)
 **
 **                Set heap size, stack size and stack location according
 **                to application requirements.
@@ -44,7 +46,10 @@ _Min_Stack_Size = 0x400; /* required amount of stack */
 /* Specify the memory areas */
 MEMORY
 {
-  /* STM32F446RE: 512KB flash, 128KB SRAM (SRAM1 112K + SRAM2 16K, contiguous) */
+  /* STM32F407VET6: 512KB flash. RAM here is SRAM1 (112K) + SRAM2 (16K) =
+   * 128KB, contiguous from 0x20000000 and reachable by DMA. The part's other
+   * 64KB is CCM RAM at 0x10000000 -- not contiguous, not DMA-reachable, and
+   * deliberately not used, so it does not appear in this map. */
   FLASH (rx)      : ORIGIN = 0x08000000, LENGTH = 512K
   RAM (xrw)       : ORIGIN = 0x20000000, LENGTH = 128K
   MEMORY_B1 (rx)  : ORIGIN = 0x60000000, LENGTH = 0K

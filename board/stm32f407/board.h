@@ -1,10 +1,13 @@
 // ///////////////////////////////////////////////////////////// //
-// Hardware abstraction layer - Nucleo-F446RE DIY panda          //
+// Hardware abstraction layer - FK407M1 (STM32F407VET6) DIY panda //
 // ///////////////////////////////////////////////////////////// //
 #include "board/boards/board_declarations.h"
 #include "board/boards/unused_funcs.h"
 
 // ///// Board definition and detection ///// //
+// lladc.h and llfan.h come from stm32f446/ on purpose: the stm32f407/ copies
+// are byte-identical, and these peripherals are register-compatible across
+// the F4 family. Not a leftover -- either path builds the same code.
 #include "board/stm32f446/lladc.h"
 #include "board/drivers/harness.h"
 #include "board/drivers/fan.h"
